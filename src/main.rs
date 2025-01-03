@@ -37,13 +37,24 @@ impl eframe::App for AudioVisualizer {
             }
 
             if !buffer.is_empty() {
-                let original_buffer_len = buffer.len();
+                // 应用抗混叠滤波器
+                let filtered_buffer =buffer;
+
+                // 确保缓冲区长度为2的幂次方，并考虑零填充
+                let fft_size = next_power_of_two(filtered_buffer.len());
+                let mut padded_buffer = vec![0.0f32; fft_size];
+                for (i, sample) in filtered_buffer.iter().enumerate() {
+                    if i < fft_size {
+                        padded_buffer[i] = *sample;
+                    }
+                }
+
+                // 应用窗口函数
+                apply_window_function(&mut padded_buffer, WindowType::Hann);
 
                 // FFT
-                let fft = self
-                    .fft_planner
-                    .plan_fft(buffer.len(), rustfft::FftDirection::Forward);
-                let mut buffer_complex = buffer
+                let fft = self.fft_planner.plan_fft(fft_size, rustfft::FftDirection::Forward);
+                let mut buffer_complex = padded_buffer
                     .iter()
                     .map(|&sample| Complex::new(sample, 0.0))
                     .collect::<Vec<Complex<f32>>>();
@@ -53,16 +64,13 @@ impl eframe::App for AudioVisualizer {
                 let buffer = buffer_complex[0..half_len]
                     .iter()
                     .map(|sample| {
-                        let norm = sample.norm_sqr().sqrt() / (buffer.len() as f32).sqrt();
+                        let norm = sample.norm_sqr().sqrt() / (fft_size as f32).sqrt();
                         20.0 * norm.log10().max(-120.0)
                     })
                     .collect::<Vec<f32>>();
 
-                // 此处使用original_buffer_len，而不是half_len，因为half_len是fft的长度，而本大神需要显示原始的采样率
-                let frequency_resolution = self.sample_rate / (original_buffer_len as f64);
-                // x坐标点们，从0开始，到half_len-1结束，间隔frequency_resolution
                 let x_values: Vec<f64> = (0..half_len)
-                    .map(|i| i as f64 * frequency_resolution)
+                    .map(|i| i as f64 * self.sample_rate / (fft_size as f64))
                     .collect();
                 let y_values: Vec<f64> = buffer.iter().map(|v| *v as f64).collect();
                 let points: Vec<[f64; 2]> = x_values
@@ -87,6 +95,41 @@ impl eframe::App for AudioVisualizer {
             ctx.request_repaint();
         });
     }
+}
+enum WindowType {
+    Hann,
+    Hamming,
+    Blackman,
+}
+
+fn apply_window_function(buffer: &mut [f32], window_type: WindowType) {
+    let len = buffer.len();
+    for i in 0..len {
+        buffer[i] *= match window_type {
+            WindowType::Hann => hann(i as f32, len as f32),
+            WindowType::Hamming => hamming(i as f32, len as f32),
+            WindowType::Blackman => blackman(i as f32, len as f32),
+        };
+    }
+}
+
+fn hann(x: f32, n: f32) -> f32 {
+    0.5 - 0.5 * (2.0 * std::f32::consts::PI * x / (n - 1.0)).cos()
+}
+
+fn hamming(x: f32, n: f32) -> f32 {
+    0.54 - 0.46 * (2.0 * std::f32::consts::PI * x / (n - 1.0)).cos()
+}
+
+fn blackman(x: f32, n: f32) -> f32 {
+    0.42 - 0.5 * (2.0 * std::f32::consts::PI * x / (n - 1.0)).cos()
+        + 0.08 * (4.0 * std::f32::consts::PI * x / (n - 1.0)).cos()
+}
+fn next_power_of_two(n: usize) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    2_usize.pow((n as f32).log2().ceil() as u32)
 }
 
 fn main() {
